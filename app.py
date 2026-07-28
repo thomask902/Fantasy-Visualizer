@@ -41,6 +41,7 @@ PLAYER_MAP_FEATURES = [
     "epa_per_game", "target_share", "rush_share", "racr",
 ]
 MIN_CAREER_GAMES = 8  # filters out tiny/noisy samples with unstable rate stats
+MIN_SEASON_GAMES = 5  # lower bar when only one season is in view
 
 # Fixed categorical color/symbol order (dataviz palette slots 1-5), so position
 # identity never depends on color alone.
@@ -121,7 +122,7 @@ def load_alltime_index() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=3600, show_spinner="Building player value map...")
-def load_career_features() -> pd.DataFrame:
+def load_career_features(year: int | None = None) -> pd.DataFrame:
     raw = load_alltime_raw()
 
     team_season_carries = raw.groupby(["season", "recent_team"])["carries"].transform("sum")
@@ -129,6 +130,10 @@ def load_career_features() -> pd.DataFrame:
     raw["rush_share"] = (raw["carries"] / team_season_carries.replace(0, np.nan)).replace([np.inf, -np.inf], np.nan)
 
     df = raw[raw["position"].isin(VISUALIZER_POSITIONS)].copy()
+    if year is not None:
+        df = df[df["season"] == year]
+    min_games = MIN_CAREER_GAMES if year is None else MIN_SEASON_GAMES
+
     df["touches"] = df["carries"].fillna(0) + df["receptions"].fillna(0) + df["attempts"].fillna(0)
     df["total_td"] = df[["passing_tds", "rushing_tds", "receiving_tds"]].fillna(0).sum(axis=1)
     df["total_epa"] = df[["passing_epa", "rushing_epa", "receiving_epa"]].fillna(0).sum(axis=1)
@@ -146,7 +151,7 @@ def load_career_features() -> pd.DataFrame:
         w_rush_share=("w_rush_share", "sum"),
         w_racr=("w_racr", "sum"),
     ).reset_index()
-    agg = agg[agg["games"] >= MIN_CAREER_GAMES].copy()
+    agg = agg[agg["games"] >= min_games].copy()
 
     agg["half_ppr_pts_per_game"] = agg["half_ppr_total"] / agg["games"]
     agg["touches_per_game"] = agg["touches_total"] / agg["games"]
@@ -156,7 +161,7 @@ def load_career_features() -> pd.DataFrame:
     agg["rush_share"] = agg["w_rush_share"] / agg["games"]
     agg["racr"] = agg["w_racr"] / agg["games"]
 
-    latest = raw.sort_values("season").groupby("player_id").last()[["player_display_name", "position", "recent_team"]]
+    latest = df.sort_values("season").groupby("player_id").last()[["player_display_name", "position", "recent_team"]]
     career = agg.merge(latest, on="player_id")
 
     X = career[PLAYER_MAP_FEATURES].fillna(0).replace([np.inf, -np.inf], 0).to_numpy()
@@ -404,12 +409,19 @@ def render_visualizer_tab():
 
 
 def render_player_map_tab():
+    col1, _ = st.columns([1, 3])
+    with col1:
+        year_choice = st.selectbox("Timeframe", ["All Time"] + [str(y) for y in YEARS], key="map_year")
+    year = None if year_choice == "All Time" else int(year_choice)
+    min_games = MIN_CAREER_GAMES if year is None else MIN_SEASON_GAMES
+
+    scope = "career" if year is None else f"{year} season"
     st.caption(
-        "Each player's career usage, efficiency, and scoring rates reduced to a "
+        f"Each player's {scope} usage, efficiency, and scoring rates reduced to a "
         "2D map via PCA - click a point to open that player in the Visualizer"
     )
 
-    career = load_career_features()
+    career = load_career_features(year)
     options = build_player_options(load_alltime_index())
     label_by_id = dict(zip(options["player_id"], options["label"]))
 
@@ -432,7 +444,7 @@ def render_player_map_tab():
             customdata=customdata,
             hovertemplate=(
                 f"<b>%{{customdata[1]}}</b> ({pos}, %{{customdata[2]}})<br>"
-                "Career games: %{customdata[3]}<br>"
+                "Games: %{customdata[3]}<br>"
                 "Half PPR pts/game: %{customdata[4]:.1f}<br>"
                 "Touches/game: %{customdata[5]:.1f}<br>"
                 "TD rate/game: %{customdata[6]:.2f}<br>"
@@ -450,7 +462,7 @@ def render_player_map_tab():
         height=650,
     )
 
-    st.caption(f"{len(career)} players with at least {MIN_CAREER_GAMES} career games")
+    st.caption(f"{len(career)} players with at least {min_games} {scope} games")
     event = st.plotly_chart(
         fig, use_container_width=True, theme="streamlit",
         on_select="rerun", selection_mode="points", key="player_map_chart",
