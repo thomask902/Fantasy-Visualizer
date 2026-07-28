@@ -24,6 +24,13 @@ SCORING_MODES = {
 }
 BOOM_OR_BUST_THRESHOLD = 0.555
 CHART_BLUE = "#2a78d6"
+MIN_BIN_WIDTH = 1.0
+MAX_BIN_WIDTH = 3.0
+
+# Skill positions with meaningful fantasy scoring - nflverse's fantasy_points
+# formula doesn't cover O-line, IDP, or kicking/punting, so those positions are
+# all-zero and not useful to search for here.
+VISUALIZER_POSITIONS = ["QB", "RB", "WR", "TE", "FB"]
 
 PASSING_COLS = [
     "completions", "attempts", "passing_yards", "passing_tds", "passing_interceptions",
@@ -93,6 +100,7 @@ def load_team_logos() -> dict:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def build_player_options(idx: pd.DataFrame) -> pd.DataFrame:
+    idx = idx[idx["position"].isin(VISUALIZER_POSITIONS)]
     latest = idx.sort_values("season").groupby("player_id", as_index=False).last()
     dupe_counts = latest.groupby(["player_display_name", "position"])["player_id"].transform("count")
     needs_team = dupe_counts > 1
@@ -146,6 +154,16 @@ def bimodality_coefficient(values: np.ndarray):
         return None
     bc = (g1 ** 2 + 1) / denom
     return None if np.isnan(bc) else bc
+
+
+def histogram_bin_width(values: np.ndarray, iqr: float) -> float:
+    """Freedman-Diaconis-style bin width (halved to fit the 1-3 point range for
+    typical NFL sample sizes), clamped to 1-3 points."""
+    n = len(values)
+    if n < 2 or iqr <= 0:
+        return MIN_BIN_WIDTH
+    width = iqr / (n ** (1 / 3))
+    return min(MAX_BIN_WIDTH, max(MIN_BIN_WIDTH, width))
 
 
 def render_data_tab():
@@ -260,9 +278,11 @@ def render_visualizer_tab():
     left, right = st.columns(2)
 
     with left:
+        bin_width = histogram_bin_width(values, iqr)
         fig = go.Figure()
         fig.add_trace(go.Histogram(
             x=values,
+            xbins=dict(size=bin_width),
             marker_color=CHART_BLUE,
             hovertemplate="%{x} pts<br>%{y} game(s)<extra></extra>",
             name="",
@@ -297,8 +317,8 @@ def render_visualizer_tab():
 
 st.title("🏈 NFL Fantasy Player Explorer")
 
-data_tab, visualizer_tab = st.tabs(["Data", "Visualizer"])
-with data_tab:
-    render_data_tab()
+visualizer_tab, data_tab = st.tabs(["Visualizer", "Data"])
 with visualizer_tab:
     render_visualizer_tab()
+with data_tab:
+    render_data_tab()
