@@ -13,7 +13,7 @@ TODAY = datetime.date.today()
 LATEST_SEASON = TODAY.year if TODAY.month >= 9 else TODAY.year - 1
 YEARS = list(range(LATEST_SEASON, FIRST_SEASON - 1, -1))
 
-FANTASY_COLS = ["fantasy_points", "half_ppr_fantasy_points", "fantasy_points_ppr"]
+FANTASY_COLS = ["fantasy_points", "fantasy_points_half_ppr", "fantasy_points_ppr"]
 
 PASSING_COLS = [
     "completions", "attempts", "passing_yards", "passing_tds", "passing_interceptions",
@@ -65,7 +65,7 @@ def prettify(col: str) -> str:
 def load_data(year: int, summary_level: str) -> pd.DataFrame:
     df = nfl.load_player_stats([year], summary_level=summary_level).to_pandas()
     df = df.rename(columns={"team": "recent_team"})  # "week" level names it differently than "reg"/"reg+post"
-    df["half_ppr_fantasy_points"] = df["fantasy_points"] + 0.5 * df["receptions"].fillna(0)
+    df["fantasy_points_half_ppr"] = df["fantasy_points"] + 0.5 * df["receptions"].fillna(0)
     return df.drop(columns=[c for c in DROP_COLS_EARLY if c in df.columns])
 
 
