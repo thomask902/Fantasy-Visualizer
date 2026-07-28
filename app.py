@@ -305,23 +305,27 @@ def render_visualizer_tab():
         st.plotly_chart(fig, use_container_width=True, theme="streamlit")
 
     with right:
-        c1, c2 = st.columns(2)
-        c1.metric("Average", fmt(avg))
-        c2.metric("Median", fmt(median))
-        c3, c4 = st.columns(2)
-        c3.metric("Std Deviation", fmt(std))
-        c4.metric("Games", str(n))
-        c5, c6 = st.columns(2)
-        c5.metric("IQR", f"[{q1:.0f}-{q3:.0f}]")
-        c6.metric("5th-95th Percentile", f"[{q05:.0f}-{q95:.0f}]")
-        c7, c8 = st.columns(2)
-        c7.metric(f"Bust Games (<{BUST_THRESHOLD:.0f} pts)", str(bust_count))
-        c8.metric("Bust Game %", f"{bust_pct:.1f}%")
+        avg_std_display = f"{avg:.1f} ± {std:.1f}" if std is not None else fmt(avg)
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Games", str(n))
+        c2.metric("Average ± Std Dev", avg_std_display)
+        c3.metric("Median", fmt(median))
+
+        c4, c5 = st.columns(2)
+        c4.metric("50% of Games Within", f"[{q1:.1f}-{q3:.1f}]")
+        c5.metric("90% of Games Within", f"[{q05:.1f}-{q95:.1f}]")
+
         if bc is None:
             bc_display = "N/A"
         else:
             bc_display = f"{bc:.3f}" + (" (Boom or Bust)" if bc > BOOM_OR_BUST_THRESHOLD else "")
-        st.metric("Bimodality Coefficient", bc_display)
+
+        c6, c7, c8 = st.columns(3)
+        c6.metric(f"Bust Games (<{BUST_THRESHOLD:.0f} pts)", f"{bust_count}/{n}")
+        c7.metric("Bust Game %", f"{bust_pct:.1f}%")
+        c8.metric("Boom or Bust Coefficient", bc_display)
+
         st.caption(f"{n} game(s) — {timeframe}")
 
 
