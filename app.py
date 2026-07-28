@@ -6,6 +6,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from scipy.stats import kurtosis, skew
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 
 st.set_page_config(page_title="NFL Fantasy Player Explorer", layout="wide")
 
@@ -32,6 +34,23 @@ MAX_BIN_WIDTH = 3.0
 # formula doesn't cover O-line, IDP, or kicking/punting, so those positions are
 # all-zero and not useful to search for here.
 VISUALIZER_POSITIONS = ["QB", "RB", "WR", "TE", "FB"]
+
+# Career-level "fantasy value" feature vector used for the Player Map's 2D embedding.
+PLAYER_MAP_FEATURES = [
+    "ppr_pts_per_game", "touches_per_game", "td_rate_per_game",
+    "epa_per_game", "target_share", "rush_share", "racr",
+]
+MIN_CAREER_GAMES = 8  # filters out tiny/noisy samples with unstable rate stats
+
+# Fixed categorical color/symbol order (dataviz palette slots 1-5), so position
+# identity never depends on color alone.
+POSITION_STYLE = {
+    "QB": {"color": "#2a78d6", "symbol": "circle"},
+    "RB": {"color": "#eb6834", "symbol": "square"},
+    "WR": {"color": "#1baf7a", "symbol": "diamond"},
+    "TE": {"color": "#eda100", "symbol": "triangle-up"},
+    "FB": {"color": "#e87ba4", "symbol": "cross"},
+}
 
 PASSING_COLS = [
     "completions", "attempts", "passing_yards", "passing_tds", "passing_interceptions",
@@ -88,9 +107,63 @@ def load_data(year: int, summary_level: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=3600, show_spinner="Loading all-time player index...")
-def load_alltime_index() -> pd.DataFrame:
+def load_alltime_raw() -> pd.DataFrame:
     df = nfl.load_player_stats(True, summary_level="reg+post").to_pandas()
+    # A handful of rows have inf target_share/racr from 0/0 divisions upstream.
+    df[["target_share", "racr"]] = df[["target_share", "racr"]].replace([np.inf, -np.inf], np.nan)
+    return df
+
+
+def load_alltime_index() -> pd.DataFrame:
+    df = load_alltime_raw()
     return df[["player_id", "player_display_name", "position", "recent_team", "season"]]
+
+
+@st.cache_data(ttl=3600, show_spinner="Building player value map...")
+def load_career_features() -> pd.DataFrame:
+    raw = load_alltime_raw()
+
+    team_season_carries = raw.groupby(["season", "recent_team"])["carries"].transform("sum")
+    raw = raw.copy()
+    raw["rush_share"] = (raw["carries"] / team_season_carries.replace(0, np.nan)).replace([np.inf, -np.inf], np.nan)
+
+    df = raw[raw["position"].isin(VISUALIZER_POSITIONS)].copy()
+    df["touches"] = df["carries"].fillna(0) + df["receptions"].fillna(0) + df["attempts"].fillna(0)
+    df["total_td"] = df[["passing_tds", "rushing_tds", "receiving_tds"]].fillna(0).sum(axis=1)
+    df["total_epa"] = df[["passing_epa", "rushing_epa", "receiving_epa"]].fillna(0).sum(axis=1)
+    df["w_target_share"] = df["target_share"].fillna(0) * df["games"]
+    df["w_rush_share"] = df["rush_share"].fillna(0) * df["games"]
+    df["w_racr"] = df["racr"].fillna(0) * df["games"]
+
+    agg = df.groupby("player_id").agg(
+        games=("games", "sum"),
+        ppr_total=("fantasy_points_ppr", "sum"),
+        touches_total=("touches", "sum"),
+        td_total=("total_td", "sum"),
+        epa_total=("total_epa", "sum"),
+        w_target_share=("w_target_share", "sum"),
+        w_rush_share=("w_rush_share", "sum"),
+        w_racr=("w_racr", "sum"),
+    ).reset_index()
+    agg = agg[agg["games"] >= MIN_CAREER_GAMES].copy()
+
+    agg["ppr_pts_per_game"] = agg["ppr_total"] / agg["games"]
+    agg["touches_per_game"] = agg["touches_total"] / agg["games"]
+    agg["td_rate_per_game"] = agg["td_total"] / agg["games"]
+    agg["epa_per_game"] = agg["epa_total"] / agg["games"]
+    agg["target_share"] = agg["w_target_share"] / agg["games"]
+    agg["rush_share"] = agg["w_rush_share"] / agg["games"]
+    agg["racr"] = agg["w_racr"] / agg["games"]
+
+    latest = raw.sort_values("season").groupby("player_id").last()[["player_display_name", "position", "recent_team"]]
+    career = agg.merge(latest, on="player_id")
+
+    X = career[PLAYER_MAP_FEATURES].fillna(0).replace([np.inf, -np.inf], 0).to_numpy()
+    X = StandardScaler().fit_transform(X)
+    coords = PCA(n_components=2, random_state=42).fit_transform(X)
+    career["x"] = coords[:, 0]
+    career["y"] = coords[:, 1]
+    return career
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -329,10 +402,100 @@ def render_visualizer_tab():
         st.caption(f"{n} game(s) — {timeframe}")
 
 
+def render_player_map_tab():
+    st.caption(
+        "Each player's career usage, efficiency, and scoring rates reduced to a "
+        "2D map via PCA - click a point to open that player in the Visualizer"
+    )
+
+    career = load_career_features()
+    options = build_player_options(load_alltime_index())
+    label_by_id = dict(zip(options["player_id"], options["label"]))
+
+    fig = go.Figure()
+    for pos in VISUALIZER_POSITIONS:
+        sub = career[career["position"] == pos]
+        if sub.empty:
+            continue
+        style = POSITION_STYLE[pos]
+        customdata = list(zip(
+            sub["player_id"], sub["player_display_name"], sub["recent_team"],
+            sub["games"], sub["ppr_pts_per_game"], sub["touches_per_game"],
+            sub["td_rate_per_game"], sub["target_share"], sub["rush_share"],
+        ))
+        fig.add_trace(go.Scatter(
+            x=sub["x"], y=sub["y"],
+            mode="markers",
+            name=pos,
+            marker=dict(color=style["color"], symbol=style["symbol"], size=8, opacity=0.75),
+            customdata=customdata,
+            hovertemplate=(
+                f"<b>%{{customdata[1]}}</b> ({pos}, %{{customdata[2]}})<br>"
+                "Career games: %{customdata[3]}<br>"
+                "PPR pts/game: %{customdata[4]:.1f}<br>"
+                "Touches/game: %{customdata[5]:.1f}<br>"
+                "TD rate/game: %{customdata[6]:.2f}<br>"
+                "Target share: %{customdata[7]:.1%}<br>"
+                "Rush share: %{customdata[8]:.1%}"
+                "<extra></extra>"
+            ),
+        ))
+
+    fig.update_layout(
+        xaxis_title="Component 1",
+        yaxis_title="Component 2",
+        legend_title_text="Position",
+        margin=dict(t=20, l=10, r=10, b=10),
+        height=650,
+    )
+
+    st.caption(f"{len(career)} players with at least {MIN_CAREER_GAMES} career games")
+    event = st.plotly_chart(
+        fig, use_container_width=True, theme="streamlit",
+        on_select="rerun", selection_mode="points", key="player_map_chart",
+    )
+
+    points = event.selection.points if event and event.selection else []
+    if points:
+        clicked_id = points[0]["customdata"][0]
+        target_label = label_by_id.get(clicked_id)
+        if target_label:
+            # Widget-bound session_state keys can't be reassigned after their
+            # widget has already been instantiated in this run - stage the
+            # change and apply it at the top of the *next* run instead.
+            st.session_state["_pending_nav"] = {
+                "active_tab": "Visualizer",
+                "viz_player": target_label,
+                "viz_scoring": "Half PPR",
+                "viz_timeframe": "Career",
+            }
+            st.rerun()
+
+    with st.expander("View underlying data"):
+        table_cols = ["player_display_name", "position", "recent_team", "games"] + PLAYER_MAP_FEATURES
+        table = career[table_cols].sort_values("ppr_pts_per_game", ascending=False)
+        rename = {c: prettify(c) for c in table_cols if c not in ("player_display_name", "recent_team")}
+        st.dataframe(table.rename(columns=rename), use_container_width=True, hide_index=True)
+
+
 st.title("🏈 NFL Fantasy Player Explorer")
 
-visualizer_tab, data_tab = st.tabs(["Visualizer", "Data"])
-with visualizer_tab:
+if "_pending_nav" in st.session_state:
+    pending = st.session_state.pop("_pending_nav")
+    for key, value in pending.items():
+        st.session_state[key] = value
+
+NAV_OPTIONS = ["Visualizer", "Player Map", "Data"]
+if "active_tab" not in st.session_state:
+    st.session_state["active_tab"] = "Visualizer"
+
+active_tab = st.segmented_control(
+    "Navigation", NAV_OPTIONS, key="active_tab", label_visibility="collapsed"
+)
+
+if active_tab == "Visualizer":
     render_visualizer_tab()
-with data_tab:
+elif active_tab == "Player Map":
+    render_player_map_tab()
+elif active_tab == "Data":
     render_data_tab()

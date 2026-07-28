@@ -4,3 +4,4 @@ nflreadpy
 numpy
 scipy
 plotly
+scikit-learn
