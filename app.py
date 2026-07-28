@@ -23,6 +23,7 @@ SCORING_MODES = {
     "PPR": "fantasy_points_ppr",
 }
 BOOM_OR_BUST_THRESHOLD = 0.555
+BUST_THRESHOLD = 5.0
 CHART_BLUE = "#2a78d6"
 MIN_BIN_WIDTH = 1.0
 MAX_BIN_WIDTH = 3.0
@@ -273,7 +274,10 @@ def render_visualizer_tab():
     std = float(values.std(ddof=1)) if n > 1 else None
     q1, q3 = np.percentile(values, [25, 75])
     iqr = float(q3 - q1)
+    q05, q95 = np.percentile(values, [5, 95])
     bc = bimodality_coefficient(values)
+    bust_count = int((values < BUST_THRESHOLD).sum())
+    bust_pct = 100 * bust_count / n
 
     left, right = st.columns(2)
 
@@ -301,17 +305,23 @@ def render_visualizer_tab():
         st.plotly_chart(fig, use_container_width=True, theme="streamlit")
 
     with right:
-        st.metric("Average", fmt(avg))
         c1, c2 = st.columns(2)
-        c1.metric("Median", fmt(median))
-        c2.metric("Std Deviation", fmt(std))
+        c1.metric("Average", fmt(avg))
+        c2.metric("Median", fmt(median))
         c3, c4 = st.columns(2)
-        c3.metric("IQR", fmt(iqr))
+        c3.metric("Std Deviation", fmt(std))
+        c4.metric("Games", str(n))
+        c5, c6 = st.columns(2)
+        c5.metric("IQR", f"[{q1:.0f}-{q3:.0f}]")
+        c6.metric("5th-95th Percentile", f"[{q05:.0f}-{q95:.0f}]")
+        c7, c8 = st.columns(2)
+        c7.metric(f"Bust Games (<{BUST_THRESHOLD:.0f} pts)", str(bust_count))
+        c8.metric("Bust Game %", f"{bust_pct:.1f}%")
         if bc is None:
             bc_display = "N/A"
         else:
             bc_display = f"{bc:.3f}" + (" (Boom or Bust)" if bc > BOOM_OR_BUST_THRESHOLD else "")
-        c4.metric("Bimodality Coefficient", bc_display)
+        st.metric("Bimodality Coefficient", bc_display)
         st.caption(f"{n} game(s) — {timeframe}")
 
 
