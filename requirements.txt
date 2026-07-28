@@ -1,3 +1,6 @@
 streamlit
 pandas
 nflreadpy
+numpy
+scipy
+plotly
