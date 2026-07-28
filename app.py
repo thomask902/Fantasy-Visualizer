@@ -37,7 +37,7 @@ VISUALIZER_POSITIONS = ["QB", "RB", "WR", "TE", "FB"]
 
 # Career-level "fantasy value" feature vector used for the Player Map's 2D embedding.
 PLAYER_MAP_FEATURES = [
-    "ppr_pts_per_game", "touches_per_game", "td_rate_per_game",
+    "half_ppr_pts_per_game", "touches_per_game", "td_rate_per_game",
     "epa_per_game", "target_share", "rush_share", "racr",
 ]
 MIN_CAREER_GAMES = 8  # filters out tiny/noisy samples with unstable rate stats
@@ -111,6 +111,7 @@ def load_alltime_raw() -> pd.DataFrame:
     df = nfl.load_player_stats(True, summary_level="reg+post").to_pandas()
     # A handful of rows have inf target_share/racr from 0/0 divisions upstream.
     df[["target_share", "racr"]] = df[["target_share", "racr"]].replace([np.inf, -np.inf], np.nan)
+    df["fantasy_points_half_ppr"] = df["fantasy_points"] + 0.5 * df["receptions"].fillna(0)
     return df
 
 
@@ -137,7 +138,7 @@ def load_career_features() -> pd.DataFrame:
 
     agg = df.groupby("player_id").agg(
         games=("games", "sum"),
-        ppr_total=("fantasy_points_ppr", "sum"),
+        half_ppr_total=("fantasy_points_half_ppr", "sum"),
         touches_total=("touches", "sum"),
         td_total=("total_td", "sum"),
         epa_total=("total_epa", "sum"),
@@ -147,7 +148,7 @@ def load_career_features() -> pd.DataFrame:
     ).reset_index()
     agg = agg[agg["games"] >= MIN_CAREER_GAMES].copy()
 
-    agg["ppr_pts_per_game"] = agg["ppr_total"] / agg["games"]
+    agg["half_ppr_pts_per_game"] = agg["half_ppr_total"] / agg["games"]
     agg["touches_per_game"] = agg["touches_total"] / agg["games"]
     agg["td_rate_per_game"] = agg["td_total"] / agg["games"]
     agg["epa_per_game"] = agg["epa_total"] / agg["games"]
@@ -420,7 +421,7 @@ def render_player_map_tab():
         style = POSITION_STYLE[pos]
         customdata = list(zip(
             sub["player_id"], sub["player_display_name"], sub["recent_team"],
-            sub["games"], sub["ppr_pts_per_game"], sub["touches_per_game"],
+            sub["games"], sub["half_ppr_pts_per_game"], sub["touches_per_game"],
             sub["td_rate_per_game"], sub["target_share"], sub["rush_share"],
         ))
         fig.add_trace(go.Scatter(
@@ -432,7 +433,7 @@ def render_player_map_tab():
             hovertemplate=(
                 f"<b>%{{customdata[1]}}</b> ({pos}, %{{customdata[2]}})<br>"
                 "Career games: %{customdata[3]}<br>"
-                "PPR pts/game: %{customdata[4]:.1f}<br>"
+                "Half PPR pts/game: %{customdata[4]:.1f}<br>"
                 "Touches/game: %{customdata[5]:.1f}<br>"
                 "TD rate/game: %{customdata[6]:.2f}<br>"
                 "Target share: %{customdata[7]:.1%}<br>"
@@ -473,7 +474,7 @@ def render_player_map_tab():
 
     with st.expander("View underlying data"):
         table_cols = ["player_display_name", "position", "recent_team", "games"] + PLAYER_MAP_FEATURES
-        table = career[table_cols].sort_values("ppr_pts_per_game", ascending=False)
+        table = career[table_cols].sort_values("half_ppr_pts_per_game", ascending=False)
         rename = {c: prettify(c) for c in table_cols if c not in ("player_display_name", "recent_team")}
         st.dataframe(table.rename(columns=rename), use_container_width=True, hide_index=True)
 
